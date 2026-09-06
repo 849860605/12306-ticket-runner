@@ -1,0 +1,27 @@
+services:
+  runner:
+    build: .
+    image: ticket-runner:local
+    init: true
+    restart: "on-failure:3"
+    shm_size: "1gb"
+    environment:
+      TZ: Asia/Shanghai
+      ENABLE_DESKTOP: "1"
+      TICKET_NOTIFY_WEBHOOK: ${TICKET_NOTIFY_WEBHOOK:-}
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ticket-data:/data
+    ports:
+      - "127.0.0.1:6080:6080"
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ticket-data:

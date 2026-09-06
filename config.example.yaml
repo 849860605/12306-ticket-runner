@@ -1,0 +1,29 @@
+# 这是示例，修改为你确实需要购买的行程后再运行。
+# 车站代码可从官网查询链接的 fs/ts 参数取得；必须同时填写名称与代码。
+task_id: trip-2026-10-01
+journey:
+  origin: {name: 深圳北, code: IOQ}
+  destination: {name: 南京南, code: NKH}
+  dates: ["2026-10-01"]
+  passengers: ["请填写12306已有成人乘车人姓名"]
+preferences:
+  trains: [G698, G2756]       # 空列表表示接受符合其他条件的全部车次
+  seats: [二等座, 一等座]     # 当前支持有座成人票，暂不自动购买无座和卧铺
+  max_total_price: 1000      # 所有乘车人票款合计上限，单位元
+  departure_after: "00:00"
+  departure_before: "23:59"
+execution:
+  start_at: "2026-09-17T10:00:00+08:00"  # 示例，须核对官方起售时间
+  stop_at: "2026-09-30T20:00:00+08:00"
+  auto_submit: false        # true 才允许按配置创建真实订单；不自动付款
+  query_interval_seconds: 5 # 所有日期共用的最小查询启动间隔；不是每个日期并发 5 秒
+  max_backoff_seconds: 300
+  max_consecutive_errors: 5
+  prepare_seconds: 300
+browser:
+  headless: false            # Docker 使用虚拟显示器，可远程接管
+  timeout_seconds: 30
+  login_timeout_seconds: 600
+notification:
+  webhook_url_env: TICKET_NOTIFY_WEBHOOK
+  attempts: 5
