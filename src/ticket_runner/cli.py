@@ -56,6 +56,12 @@ def parser() -> argparse.ArgumentParser:
         help="no-order=已确认没有订单、允许重试；done=任务已处理完毕",
     )
     sub.add_parser("demo", help="离线模拟超时、重启、核对订单流程，不访问12306")
+    serve = sub.add_parser("serve", help="启动 V2 本地控制台；不会自动开始抢票")
+    serve.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "0.0.0.0", "::1"])
+    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument(
+        "--demo", action="store_true", help="独立演示模式：不联网、不使用真实账号、不生成真实订单"
+    )
     return root
 
 
@@ -258,6 +264,24 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parser().parse_args()
     try:
+        if args.command == "serve":
+            import uvicorn
+
+            from .web import create_app
+
+            if not 1024 <= args.port <= 65535:
+                raise ValueError("端口必须在 1024 到 65535 之间")
+            config = load_config(args.config)
+            print(f"V2 控制台：http://127.0.0.1:{args.port}；启动界面不会开始抢票。", flush=True)
+            uvicorn.run(
+                create_app(config, args.data_dir, demo=args.demo),
+                host=args.host,
+                port=args.port,
+                access_log=False,
+                timeout_graceful_shutdown=10,
+                proxy_headers=False,
+            )
+            return
         result = asyncio.run(execute(args))
     except NeedsAttention as exc:
         log.error("%s", exc)

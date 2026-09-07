@@ -21,6 +21,7 @@ from .domain import (
     Offer,
     OrderReceipt,
     QueryFailed,
+    parse_catalog,
     parse_offers,
     query_url,
 )
@@ -70,6 +71,7 @@ QUERY_ROWS_JS = """root => Array.from(root.querySelectorAll('tr[id^="ticket_"]')
     origin: r.querySelector('.cdz strong:first-child')?.textContent.trim() || '',
     destination: r.querySelector('.cdz strong:last-child')?.textContent.trim() || '',
     departure: r.querySelector('.cds strong:first-child')?.textContent.trim() || '',
+    arrival: r.querySelector('.cds strong:last-child')?.textContent.trim() || '',
     seats: Array.from(r.querySelectorAll('td[aria-label]')).map(c => c.getAttribute('aria-label')),
     bookable: Array.from(r.querySelectorAll('a')).some(a => a.textContent.trim() === '预订')
   }))"""
@@ -122,6 +124,11 @@ class BrowserAdapter:
         self.playwright = None
         self.current_date: date | None = None
         self.on_login_required = None
+        self.on_progress = None
+
+    def progress(self, stage, message):
+        if self.on_progress:
+            self.on_progress(stage, message)
 
     async def __aenter__(self):
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -242,7 +249,7 @@ class BrowserAdapter:
         if "error.html" in self.page.url:
             raise NeedsAttention("官网返回异常页面，请检查访问环境")
 
-    async def query(self, travel_date: date) -> list[Offer]:
+    async def query_rows(self, travel_date: date) -> list[dict]:
         target = query_url(self.config.journey.origin, self.config.journey.destination, travel_date)
         # Fresh navigation prevents accidentally reading rows from a previous date/query.
         await self.page.goto(target, wait_until="domcontentloaded")
@@ -260,13 +267,20 @@ class BrowserAdapter:
         await self.detect_interruption()
         rows = await results.evaluate(QUERY_ROWS_JS)
         if rows:
-            if not sum(len(row["seats"]) for row in rows):
-                raise QueryFailed("结果缺少可核实的票价/余票描述，停止使用未知页面结构")
-            return parse_offers(rows, travel_date)
+            return rows
         empty = self.page.get_by_text("没有符合筛选条件的车次，请修改筛选条件", exact=False)
         if await empty.count() == 1 and await empty.is_visible():
             return []
         raise QueryFailed("查询未返回可确认的结果，不能判定为无票")
+
+    async def query(self, travel_date: date) -> list[Offer]:
+        rows = await self.query_rows(travel_date)
+        if rows and not sum(len(row["seats"]) for row in rows):
+            raise QueryFailed("结果缺少可核实的票价/余票描述，停止使用未知页面结构")
+        return parse_offers(rows, travel_date)
+
+    async def query_catalog(self, travel_date: date) -> list[dict]:
+        return parse_catalog(await self.query_rows(travel_date), travel_date, self.config)
 
     async def one(self, key: str):
         locator = self.page.locator(self.selectors[key])
@@ -515,12 +529,15 @@ class BrowserAdapter:
             return None
         await self.verify_form(offer)
         await (await self.one("submit")).click()
+        self.progress("ORDER_SUBMITTED", "已点击初始提交，等待官方最终确认窗口")
         try:
             await self.page.locator(self.selectors["review"]).wait_for(state="visible")
+            self.progress("REVIEW", "逐项核对最终确认窗口的行程、乘车人、席别与预算")
             await self.verify_review(offer)
             if datetime.now(SHANGHAI) >= self.config.execution.stop_at:
                 return None
             await (await self.one("confirm")).click()
+            self.progress("QUEUED", "已点击最终确认，等待官网处理；尚不能判定订票成功")
             await self.page.get_by_text(
                 re.compile("席位已锁定|订票成功|订单提交成功")
             ).first.wait_for(state="visible")
@@ -536,6 +553,7 @@ class BrowserAdapter:
                 log.warning("无法读取确认页结构，请从远程桌面检查")
             return None
         # Success text alone is insufficient; independently inspect the official order.
+        self.progress("RECONCILE", "官网返回成功提示，正在独立核对待支付订单")
         return await self.reconcile(offer)
 
     async def open_orders(self) -> str:

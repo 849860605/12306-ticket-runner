@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>候车 · 12306 个人抢票控制台</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/app.js" defer></script></head>
+<body>
+<header class="topbar"><a class="brand" href="/" aria-label="候车控制台首页"><span class="brand-mark" aria-hidden="true">候</span><strong>候车<span>Ticket Runner</span></strong></a><div class="topbar-meta"><span class="version">V2.0</span><span class="pill" id="mode-badge">本地控制台</span></div></header>
+<main class="workspace">
+  <div class="intro"><div><div class="eyebrow">YOUR NEXT JOURNEY</div><h1>选好车次，安心等票。</h1><p>选择你的出行偏好，查询、匹配与提交过程实时可见。</p></div><div class="safety-note"><span class="status-dot"></span>只提交订单，不自动付款</div></div>
+  <div id="demo-banner" class="banner demo-banner" hidden>演示环境 · 车次和订单均为模拟数据，不访问 12306，也不使用你的真实账号。</div>
+  <div id="connection-banner" class="banner warning" hidden>实时连接已断开，正在重连。页面关闭或断线不会停止服务器上的任务；状态恢复前不会允许再次启动。</div>
+  <div id="blocker-banner" class="banner warning" hidden></div>
+  <div class="dashboard-grid">
+    <section class="selection-column" aria-label="行程及车次选择">
+      <form id="journey-form" class="card journey-card">
+        <div class="section-heading"><div><span class="section-number">01</span><h2>行程与偏好</h2></div><span id="save-status" class="muted small">读取配置中…</span></div>
+        <fieldset id="config-fields"><legend class="sr-only">抢票条件</legend>
+          <div class="station-row"><label>出发站<input id="origin" list="stations" required maxlength="30" autocomplete="off" placeholder="例如：深圳北"></label><button type="button" class="swap-button" id="swap" aria-label="交换出发站与到达站">⇄</button><label>到达站<input id="destination" list="stations" required maxlength="30" autocomplete="off" placeholder="例如：信阳东"></label></div>
+          <datalist id="stations"><option value="深圳北"></option><option value="信阳东"></option><option value="南京南"></option></datalist>
+          <div class="fields two-columns"><label>最早出发日期<input id="date-from" type="date" required></label><label>最晚出发日期<input id="date-to" type="date" required></label></div>
+          <p class="field-hint">监控区间内的每一天；按日期顺序轮流查询。</p>
+          <div class="fields two-columns"><label>发车时间 · 不早于<input id="time-from" type="time" required value="08:30"></label><label>发车时间 · 不晚于<input id="time-to" type="time" required value="23:59"></label></div>
+          <div class="field-group"><span class="field-label">席别偏好 <span class="muted small">按勾选顺序优先</span></span><div id="seat-options" class="seat-options">
+            <label class="choice-chip"><input type="checkbox" name="seat" value="二等座"><span>二等座</span></label><label class="choice-chip"><input type="checkbox" name="seat" value="一等座"><span>一等座</span></label><label class="choice-chip"><input type="checkbox" name="seat" value="商务座"><span>商务座</span></label><label class="choice-chip"><input type="checkbox" name="seat" value="特等座"><span>特等座</span></label><label class="choice-chip"><input type="checkbox" name="seat" value="硬座"><span>硬座</span></label><label class="choice-chip"><input type="checkbox" name="seat" value="软座"><span>软座</span></label>
+          </div><p class="field-hint">选择的是席别，具体车厢与座号由 12306 分配；不购买无座。</p></div>
+          <div class="fields two-columns"><label>乘车人姓名<input id="passengers" required maxlength="160" placeholder="与12306一致，多人用逗号分隔" autocomplete="off"></label><label>总预算上限（元）<input id="budget" type="number" min="0.01" max="999999.99" step="0.01" required></label></div>
+          <details class="advanced"><summary>执行时间与高级设置</summary><div class="advanced-content"><div class="fields two-columns"><label>计划开始时间（北京时间）<input id="start-at" type="datetime-local" required></label><label>停止查询时间（北京时间）<input id="stop-at" type="datetime-local" required></label></div><div class="fields three-columns"><label>查询间隔（秒）<input id="interval" type="number" min="5" max="3600" required></label><label>出发站代码<input id="origin-code" pattern="[A-Z]{3}" maxlength="3" required></label><label>到达站代码<input id="destination-code" pattern="[A-Z]{3}" maxlength="3" required></label></div><p class="field-hint">全部日期共用查询节拍，不并发刷票；遇到官网限流自动退避。车站名称和代码必须对应。</p><label>指定车次（可手填，也可在下方勾选）<input id="manual-trains" maxlength="200" placeholder="例如 G846，G80；留空需明确选择接受全部车次"></label></div></details>
+          <div class="form-actions"><button type="submit" class="button secondary" id="save-button">保存偏好</button><button type="button" class="button primary" id="query-button">查询可选车次 <span aria-hidden="true">→</span></button></div>
+        </fieldset>
+      </form>
+
+      <section class="card train-card"><div class="section-heading"><div><span class="section-number">02</span><h2>选择车次</h2><span class="count-badge" id="train-count">0</span></div><button id="clear-trains" type="button" class="text-button">清空选择</button></div><div class="selection-summary"><span id="selected-summary">尚未选择车次</span><label class="inline-check"><input type="checkbox" id="all-trains">接受符合条件的全部车次</label></div><div id="train-list" class="train-list" aria-live="polite"><div class="empty-state"><div class="empty-track" aria-hidden="true">··· → ···</div><h3>你的下一程，从这里开始</h3><p>填写行程后查询车次。无票车次也可以选中，持续等候余票。</p></div></div><div class="card-footnote" id="catalog-note">列表只是查询时的快照，下单前会重新查票和核对价格。</div></section>
+
+      <section class="card start-card"><div class="section-heading"><div><span class="section-number">03</span><h2>开始监控</h2></div><span class="pill neutral">不自动付款</span></div><p id="plan-summary" class="plan-summary">保存行程后，在这里核对你的抢票计划。</p><div class="mode-options"><label><input type="radio" name="run-mode" value="watch" checked><span><strong>只读监控</strong><small>发现匹配车票就停止，不进入预订</small></span></label><label><input type="radio" name="run-mode" value="submit"><span><strong>有票自动提交</strong><small>确认生成待支付订单后停止，由你付款</small></span></label></div><label id="consent-row" class="consent" hidden><input type="checkbox" id="submit-consent"><span>我已核对行程、乘车人、席别和总预算，允许按这些条件创建真实待支付订单。</span></label><div class="form-actions"><button class="button primary start-button" id="start-button" type="button" disabled>开始只读监控</button><button class="button secondary" id="stop-button" type="button" disabled>暂停任务</button></div><p class="field-hint">关闭此页面不会停止服务器任务；请使用“暂停任务”。提交结果不明确时不会再次下单。</p></section>
+    </section>
+
+    <aside class="monitor-column" aria-label="实时流程与官方浏览器">
+      <section class="card monitor-card"><div class="section-heading"><div><span class="live-indicator" aria-hidden="true"></span><h2>抢票实况</h2></div><a href="/monitor" target="_blank" rel="noopener" class="text-button" aria-label="独立打开实时流程">独立打开 ↗</a></div><iframe id="process-frame" class="process-frame" src="/monitor" title="嵌入式实时抢票流程" loading="eager"></iframe></section>
+      <section class="card desktop-card"><div class="section-heading"><h2>官方浏览器</h2><span class="pill neutral" id="login-status">未检查登录</span></div><p class="muted small">扫码与额外核验在这里完成。它连接的是容器内的真实浏览器，不是模拟登录页。</p><div class="desktop-placeholder" id="desktop-placeholder"><span class="desktop-glyph" aria-hidden="true">▤</span><strong>等待连接官方浏览器</strong><span>点击下方按钮打开扫码入口</span></div><iframe id="desktop-frame" class="desktop-frame" title="官方12306浏览器远程桌面" hidden></iframe><div class="desktop-actions"><button id="login-button" class="button secondary" type="button">打开扫码登录</button><a id="desktop-link" href="http://127.0.0.1:6080/vnc.html?autoconnect=1&amp;resize=scale" target="_blank" rel="noopener" class="text-button">大窗口 ↗</a></div><p class="field-hint" id="desktop-hint">远程服务器需通过 SSH 转发 8080 与 6080 端口，切勿公开控制端口。</p></section>
+      <section class="card history-card"><div class="section-heading"><h2>订单与任务记录</h2></div><div id="task-history" class="task-history"><p class="muted small">正在读取本地记录…</p></div><p id="notification-hint" class="field-hint"></p></section>
+    </aside>
+  </div>
+  <footer class="footer"><span>候车 · 个人使用控制台</span><span>官网浏览器模式 · 不提供特殊票源或优先级</span></footer>
+</main>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="resolve-dialog"><form id="resolve-form"><h2>先核对，再处理记录</h2><p>请先在官方12306检查是否存在待支付或已支付订单。此操作只修改本地记录，不会取消或退款。</p><label>处理方式<select id="resolve-outcome"><option value="done">任务已处理完毕 / 不再需要</option><option value="no-order">已确认无订单，解除本地阻止</option></select></label><label>请输入“已核对官方订单”<input id="resolve-confirmation" required autocomplete="off"></label><div class="form-actions"><button type="button" class="button secondary" id="resolve-cancel">返回核对</button><button type="submit" class="button primary">记录核对结果</button></div></form></dialog>
+</body></html>

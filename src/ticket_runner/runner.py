@@ -49,6 +49,20 @@ class Runner:
             await self.sleep(min(1, max(0, (end - self.clock()).total_seconds())))
 
     async def measured(self, stage, operation, *args):
+        labels = {
+            "login": "检查官方登录状态",
+            "account_check": "检查未完成订单",
+            "query": "正在查询官网余票",
+            "prepare": "进入预订表单并核对乘车人、席别、价格",
+            "submit_and_reconcile": "提交确认并核对官方订单",
+            "reconcile": "只核对上次提交，不重新下单",
+        }
+        self.store.event(
+            self.config.task_id,
+            stage.upper(),
+            labels.get(stage, stage),
+            **({"date": str(args[0])} if stage == "query" else {}),
+        )
         started = self.monotonic()
         outcome = "error"
         try:
@@ -151,6 +165,9 @@ class Runner:
                     candidates = rank_offers(offers, cfg, self.clock())
                     if candidates:
                         offer = candidates[0]
+                        self.store.event(
+                            cfg.task_id, "MATCHED", "发现符合配置的候选车票", offer=offer.to_dict()
+                        )
                         if not cfg.execution.auto_submit:
                             self.store.transition(
                                 cfg.task_id,
@@ -197,6 +214,13 @@ class Runner:
                         )
                         await self.notifier.flush()
                         return
+                    self.store.event(
+                        cfg.task_id,
+                        "NO_MATCH",
+                        "暂无符合条件的余票，等待下一次查询",
+                        date=str(travel_date),
+                        interval=cfg.execution.query_interval_seconds,
+                    )
                 errors = 0
                 # When every configured date is in the past, do not busy-loop.
                 if all(d < self.clock().astimezone(SHANGHAI).date() for d in cfg.journey.dates):

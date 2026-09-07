@@ -1,8 +1,10 @@
-# 12306 Ticket Runner
+# 12306 Ticket Runner V2 · 候车控制台
 
-个人使用的配置文件驱动脚本：官方扫码登录、按时查询、按偏好尝试订票、订单核对和通知，支持 Docker。
+个人使用的网页控制台：在页面选择行程、发车时段、车次和席别，内嵌实时流程、日志及官方浏览器扫码窗口。支持 Docker，原有配置文件与命令行仍可使用。
 
-**曾按用户授权在官网生成真实待支付订单，未付款；尚未证明全自动抢稀缺票。** 当次最终确认由浏览器接管完成，旧版自动回查未完成。修正后的生产适配器已通过 78 项单元测试、9 个离线 Chromium 页面场景及完整断网浏览器下单/回查/重启防重测试；新回查逻辑仍缺一次真实订单的完整验证。不能把测试通过、点击成功或有票时下单等同于抢票成功率提升。[可行性调研](docs/feasibility.md)记录了证据和限制。
+**当前查询和下单仍通过官方网页浏览器完成，不是登录后直调 12306 私有接口。** Web API 仅用于控制自己的执行器，SSE 仅推送本地状态，不会因此提高官网查询频率或获得优先票源。
+
+**曾按用户授权在官网生成真实待支付订单，未付款；尚未证明全自动抢稀缺票。** 当次最终确认由浏览器接管完成，旧版自动回查未完成。目前通过 99 项自动化测试；生产适配器另有 9 个离线 Chromium 页面场景及完整断网浏览器下单/回查/重启防重测试。新回查逻辑仍缺一次真实订单的完整验证，V2 界面联调只使用隔离模拟数据。不能把测试通过、点击成功或有票时下单等同于抢票成功率提升。[可行性调研](docs/feasibility.md)记录了证据和限制。
 
 支持成人直达有座票、多日期、多车次/席别优先级、严格上下车站和总预算。暂不自动购买学生票、儿童票、卧铺、无座，不自动付款，不自动支付候补。无票时建议同时在官方 App 提交候补。
 
@@ -12,14 +14,35 @@
 cp config.example.yaml config.yaml
 cp .env.example .env
 # 编辑 config.yaml 的真实行程、成人乘车人、起售时间和预算。
-# 演练保持 auto_submit: false；确认真实购票需求后才改为 true。
+# 初始配置保持 auto_submit: false；网页启动时另行明确确认。
 docker compose build
 docker compose run --rm -e ENABLE_DESKTOP=0 runner --config /config/config.yaml validate
+docker compose up -d
 ```
+
+打开 **http://127.0.0.1:8080**。启动容器、打开页面、保存偏好都不会启动抢票；服务器重启也不会自动恢复任务。
+
+1. 选择出发/到达站、出行日期区间、发车时段、成人乘车人、席别和总预算。
+2. 点“查询可选车次”，勾选希望监控的车次；**无票车次也可选择**。同一车次适用于整个日期区间，按勾选顺序优先。站名支持本地自动补全，异常时可在高级设置填写官方代码。
+3. 保存后核对页面计划。只读模式发现匹配票就停止；要创建订单，选择“有票自动提交”，明确勾选授权后再开始。
+4. 右侧内嵌小窗实时显示登录、循环查票、选人选席别、提交、回查等事件；下方“官方浏览器”提供扫码与人工核验入口。
+5. 确认生成待支付订单后停止，不付款。结果不确定时停止并阻止重复提交；必须先去官方核对。关闭网页不会停止已经启动的任务，请点击“暂停任务”。
+
+席别是二等座、一等座等；暂不支持指定靠窗/过道或具体座号，车厢、座号由 12306 分配。页面保存在私人数据卷 `/data/ui-config.yaml`，单次任务配置另存 `/data/tasks/`，均不改写宿主机只读的 `config.yaml`。请勿上传这些文件或数据卷。
+
+远程部署时，在自己的电脑执行：
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 -L 6080:127.0.0.1:6080 user@your-server
+```
+
+然后访问本机 `127.0.0.1:8080`。两个端口都只绑定服务器回环地址；不要直接暴露到公网。控制台依靠本机/SSH 信任边界，并做 Host、同源、操作令牌校验，不是多人公网服务。
 
 示例日期不是动态日期，起售时刻也不是所有车站通用值。请按官方查询填写。车站名称/代码从官方查询页面 URL 的 `fs`、`ts` 参数取得，例如 `fs=深圳北,IOQ`。配置中乘车人必须已经存在于该 12306 账号中，并完成核验。
 
 ## 官方二维码登录
+
+V2 推荐直接在控制台点“打开扫码登录”，在内嵌浏览器扫码。以下命令行操作需先 `docker compose stop runner`，避免与控制台抢占浏览器和数据目录：
 
 ```bash
 docker compose run --rm --service-ports runner --config /config/config.yaml --data-dir /data login
@@ -61,11 +84,11 @@ docker compose run --rm --service-ports runner --config /config/config.yaml --da
 
 `probe --all-dates` 会按配置间隔依次查询全部日期。`check-checkout` 会选择首个符合配置的候选项，点击“预订”并核对乘车人、成人票、席别和报价，但**不点击“提交订单”或最终“确认”**；用于登录后的表单联调，即使配置 `auto_submit: true` 也不提交。
 
-启动计划任务：
+不使用网页、单独启动命令行计划任务（先停控制台）：
 
 ```bash
-docker compose up -d
-docker compose logs -f runner
+docker compose stop runner
+docker compose run --rm --service-ports runner --config /config/config.yaml --data-dir /data run --keep-alive
 ```
 
 `auto_submit: false`：运行到发现匹配车票后进入 `DRY_RUN`，不点击预订。
@@ -109,7 +132,7 @@ docker compose run --rm --service-ports runner --config /config/config.yaml --da
 
 运行前先停止同一数据卷的其他执行器。只有唯一待支付订单的行程、出发时刻、逐人成人票、席别、已分配席位和总预算均可验证时才更新 `ORDER_CREATED`。当前官网列表不显示订单号时，保存核对凭据 `receipt`，`order_id` 保持空值，不编造号码。该状态记录当时核对成功，不保证订单后来未超时；当前有效性以官网为准。
 
-容器退出/重启后，`SUBMITTING`、`UNKNOWN` 只尝试核对上次订单，即使查不到也不会直接重复提交。其他任务也会被尚未处理的订单阻止。
+V2 控制台重启后不自动执行任何账号操作，`SUBMITTING`、`UNKNOWN` 仍会阻止新任务。网页可点“只回查订单”；命令行 `run` 的恢复路径也只核对上次订单，即使查不到也不会直接重复提交。其他任务也会被尚未处理的订单阻止。
 
 需要恢复时先停止执行器，在官方 App 检查是否已经有票/待支付订单。只有确认不存在订单才能使用 `no-order`：
 
@@ -121,7 +144,7 @@ docker compose up -d
 
 如果已经付款或任务不再需要，将 `--outcome no-order` 改为 `--outcome done`。不要把尚不确定的订单标记为 `no-order`。
 
-同一个 `task_id` 的配置不可静默变更，修改行程/模式后应在处理完旧任务的订单后使用新的 `task_id`。容器任务结束后保留浏览器并继续发送待投递通知；需停止容器才能执行登录或恢复命令。
+同一个 `task_id` 的配置不可静默变更，修改行程/模式后应在处理完旧任务的订单后使用新的 `task_id`。网页为每次明确启动生成独立任务 ID；命令行需自行设置。控制台运行时可直接使用网页登录和回查；使用独立命令行操作前先停容器。
 
 ## 通知
 
@@ -141,9 +164,14 @@ uv run ticket-runner --config config.example.yaml validate
 uv run ticket-runner demo
 uv run pytest -q
 uv run ruff check src tests scripts docker
+uv run ticket-runner --config config.example.yaml --data-dir data/preview serve --demo --port 8081
 ```
 
 `demo` 完全离线，模拟“提交后响应丢失 → 重启 → 核对订单”，最终总提交次数应为 1。它不启动浏览器，也不会发送 Webhook。
+
+`serve --demo` 是独立的网页演示：打开 `http://127.0.0.1:8081`，模拟先无票、再匹配并提交，所有记录位于指定目录下的 `ui-demo/`。不使用真实账号、数据库、浏览器或 Webhook；模拟结果不代表真实购票成功。实时流程也可以通过 `/monitor` 独立打开。
+
+车站补全表来自 [12306 官方公开车站表](https://kyfw.12306.cn/otn/resources/js/framework/station_name.js)，于 2026-09-07 收录 3384 站；这不是余票数据接口。站点更新后需要更新静态表，或手填正确站名/代码。
 
 本机运行需要安装项目匹配的浏览器：
 

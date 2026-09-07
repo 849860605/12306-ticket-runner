@@ -3,6 +3,7 @@ services:
     build: .
     image: ticket-runner:local
     init: true
+    command: ["--config", "/config/config.yaml", "--data-dir", "/data", "serve", "--host", "0.0.0.0", "--port", "8080"]
     restart: "on-failure:3"
     shm_size: "1gb"
     environment:
@@ -13,6 +14,7 @@ services:
       - ./config.yaml:/config/config.yaml:ro
       - ticket-data:/data
     ports:
+      - "127.0.0.1:8080:8080"
       - "127.0.0.1:6080:6080"
     security_opt:
       - no-new-privileges:true

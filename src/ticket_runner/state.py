@@ -31,6 +31,7 @@ def exclusive_run(data_dir: Path):
 
 class Store:
     def __init__(self, data_dir: Path):
+        self.on_event = None
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(data_dir / "state.sqlite3")
         os.chmod(data_dir / "state.sqlite3", 0o600)
@@ -54,6 +55,10 @@ class Store:
                 id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, stage TEXT NOT NULL,
                 seconds REAL NOT NULL, outcome TEXT NOT NULL, recorded REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, stage TEXT NOT NULL,
+                message TEXT NOT NULL, details TEXT NOT NULL, recorded REAL NOT NULL
+            );
         """)
         if "receipt" not in {row["name"] for row in self.db.execute("PRAGMA table_info(tasks)")}:
             self.db.execute("ALTER TABLE tasks ADD COLUMN receipt TEXT")
@@ -61,6 +66,22 @@ class Store:
 
     def close(self):
         self.db.close()
+
+    def event(self, task_id: str, stage: str, message: str, **details):
+        with self.db:
+            self.db.execute(
+                "INSERT INTO events(task_id,stage,message,details,recorded) VALUES(?,?,?,?,?)",
+                (task_id, stage, message, json.dumps(details, ensure_ascii=False), time.time()),
+            )
+            self.db.execute("DELETE FROM events WHERE id <= (SELECT MAX(id)-1000 FROM events)")
+        if self.on_event:
+            self.on_event(stage, message, details)
+
+    def recent_events(self, limit=60):
+        rows = self.db.execute(
+            "SELECT * FROM events ORDER BY id DESC LIMIT ?", (max(1, min(limit, 200)),)
+        ).fetchall()
+        return [{**dict(row), "details": json.loads(row["details"])} for row in reversed(rows)]
 
     def record_timing(self, task_id: str, stage: str, seconds: float, outcome: str):
         with self.db:
@@ -142,6 +163,7 @@ class Store:
                     "INSERT INTO outbox(task_id,title,body) VALUES(?,?,?)",
                     (task_id, f"12306 {state}", message),
                 )
+        self.event(task_id, state, message)
 
     def resolve(self, task_id: str, outcome: str):
         old = self.get(task_id)

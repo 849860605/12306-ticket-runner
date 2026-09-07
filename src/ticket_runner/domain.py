@@ -147,3 +147,46 @@ def rank_offers(offers: list[Offer], config: Config, now: datetime) -> list[Offe
             x.price,
         ),
     )
+
+
+def parse_catalog(rows: list[dict], travel_date: date, config: Config) -> list[dict]:
+    """A selection catalog, including sold-out trains. Never used as purchase authority."""
+    catalog = []
+    for row in rows:
+        if (row.get("origin"), row.get("destination")) != (
+            config.journey.origin.name,
+            config.journey.destination.name,
+        ):
+            continue
+        if not re.fullmatch(r"[A-Z]?\d{1,5}", row.get("train", "")):
+            continue
+        try:
+            departure = time.fromisoformat(row["departure"])
+        except (ValueError, KeyError):
+            continue
+        if (
+            not config.preferences.departure_after
+            <= departure
+            <= config.preferences.departure_before
+        ):
+            continue
+        seats = []
+        for description in row.get("seats", []):
+            match = re.fullmatch(
+                r"(.+?)次列车，(.+?)票价([\d.]+)元，余票(有|\d+|候补|无|--)", description.strip()
+            )
+            if match and match[1] == row["train"]:
+                seats.append({"name": match[2], "price": match[3], "status": match[4]})
+        catalog.append(
+            {
+                "train": row["train"],
+                "date": str(travel_date),
+                "origin": row["origin"],
+                "destination": row["destination"],
+                "departure": row["departure"],
+                "arrival": row.get("arrival", ""),
+                "bookable": bool(row.get("bookable")),
+                "seats": seats,
+            }
+        )
+    return catalog

@@ -25,4 +25,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY docker/entrypoint.py /app/entrypoint.py
 USER runner
 ENTRYPOINT ["python", "/app/entrypoint.py"]
-CMD ["--config", "/config/config.yaml", "--data-dir", "/data", "run", "--keep-alive"]
+CMD ["--config", "/config/config.yaml", "--data-dir", "/data", "serve", "--host", "0.0.0.0", "--port", "8080"]
