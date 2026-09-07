@@ -5,6 +5,7 @@ import re
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -109,9 +110,12 @@ class Config(StrictModel):
     execution: Execution
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
+    query_backend: Literal["browser", "api"] = "browser"
 
     def fingerprint(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+        # Preserve fingerprints of existing browser tasks, especially UNKNOWN orders.
+        excluded = {"query_backend"} if self.query_backend == "browser" else set()
+        return hashlib.sha256(self.model_dump_json(exclude=excluded).encode()).hexdigest()
 
 
 def load_config(path: Path) -> Config:

@@ -279,6 +279,7 @@ class Controller:
         config.execution.auto_submit = False
         if (
             config.journey.model_dump() != self.draft.journey.model_dump()
+            or config.query_backend != self.draft.query_backend
             or config.preferences.departure_after != self.draft.preferences.departure_after
             or config.preferences.departure_before != self.draft.preferences.departure_before
         ):
@@ -497,6 +498,8 @@ class Controller:
             "version": self.version,
             "server_time": datetime.now(SHANGHAI).isoformat(),
             "mode": "demo" if self.demo else "browser",
+            "query_backend": self.draft.query_backend,
+            "order_backend": "browser",
             "busy": self.busy,
             "phase": self.phase,
             "completed_steps": sorted(self.completed_steps),

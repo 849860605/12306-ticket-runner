@@ -126,6 +126,41 @@ async def test_save_is_private_and_never_enables_auto_submit(dashboard):
     assert controller.adapter is None and not controller.store.status()["tasks"]
 
 
+async def test_api_engine_is_explicit_and_never_enables_api_orders(dashboard):
+    client, controller, boot = dashboard
+    config = boot["config"]
+    assert config["query_backend"] == "browser"
+    config["query_backend"] = "api"
+    saved = (await client.post("/api/config", json=config)).json()
+    assert saved["config"]["query_backend"] == "api"
+    assert saved["fingerprint"] != boot["fingerprint"]
+    state = (await client.get("/api/status")).json()
+    assert state["query_backend"] == "api" and state["order_backend"] == "browser"
+    assert controller.work is None and controller.adapter is None
+    assert (await client.post("/api/query", json={})).status_code == 202
+    await controller.work
+    assert controller.adapter.submit_calls == controller.adapter.prepare_calls == 0
+    config["query_backend"] = "api-order"
+    assert (await client.post("/api/config", json=config)).status_code == 422
+
+
+async def test_switching_engine_never_clears_unknown_order(dashboard, offer):
+    client, controller, boot = dashboard
+    controller.store.register(controller.base)
+    controller.store.transition(controller.base.task_id, "UNKNOWN", offer=offer)
+    config = boot["config"]
+    config["query_backend"] = "api"
+    saved = (await client.post("/api/config", json=config)).json()
+    assert controller.store.get(controller.base.task_id)["state"] == "UNKNOWN"
+    assert (
+        await client.post(
+            "/api/start",
+            json={"auto_submit": True, "confirmed": True, "fingerprint": saved["fingerprint"]},
+        )
+    ).status_code == 409
+    assert controller.adapter is None
+
+
 async def test_readonly_catalog_includes_sold_out_and_never_buys(dashboard):
     client, controller, _ = dashboard
     assert (await client.post("/api/query", json={})).status_code == 202

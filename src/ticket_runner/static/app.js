@@ -39,6 +39,7 @@ function formConfig() {
   if (!seatPriority.length) throw Error('请至少选择一种席别');
   if (!$('all-trains').checked && !selectedTrains.size) throw Error('请选择车次，或明确勾选“接受符合条件的全部车次”');
   const config = structuredClone(baseConfig);
+  config.query_backend = $('query-backend').value;
   config.journey = {origin:{name:$('origin').value.trim(),code:$('origin-code').value.trim().toUpperCase()}, destination:{name:$('destination').value.trim(),code:$('destination-code').value.trim().toUpperCase()}, dates:dayRange($('date-from').value, $('date-to').value), passengers:$('passengers').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean)};
   config.preferences = {...config.preferences, trains:$('all-trains').checked ? [] : [...selectedTrains], seats:[...seatPriority], max_total_price:$('budget').value, departure_after:$('time-from').value, departure_before:$('time-to').value};
   config.execution = {...config.execution, start_at:$('start-at').value + ':00+08:00', stop_at:$('stop-at').value + ':00+08:00', query_interval_seconds:Number($('interval').value), auto_submit:false};
@@ -104,6 +105,7 @@ async function save() {
 }
 function fill(config) {
   baseConfig = config;
+  $('query-backend').value = config.query_backend || 'browser';
   for (const station of [config.journey.origin, config.journey.destination]) stations.set(station.name,station.code);
   $('origin').value = config.journey.origin.name; $('origin-code').value = config.journey.origin.code;
   $('destination').value = config.journey.destination.name; $('destination-code').value = config.journey.destination.code;
@@ -147,7 +149,7 @@ function renderCatalog(state) {
     const seats=train.seats.filter(x=>seatPriority.includes(x.name));
     for (const seat of seats) {
       const quote=node('div','seat-quote'); const sold=['候补','无','--','0'].includes(seat.status);
-      quote.append(node('span','',seat.name),node('strong','',`¥${seat.price}`),node('span',`availability${sold?' sold-out':''}`,sold ? '暂无票 · 可监控' : seat.status==='有' ? '有票' : `余 ${seat.status} 张`)); quotes.append(quote);
+      quote.append(node('span','',seat.name),node('strong','',seat.price == null ? '报价待核实' : `¥${seat.price}`),node('span',`availability${sold?' sold-out':''}`,sold ? '暂无票 · 可监控' : seat.status==='有' ? '有票' : `余 ${seat.status} 张`)); quotes.append(quote);
     }
     if (!seats.length) quotes.append(node('span','muted small','所选席别暂无可核实报价 · 可监控'));
     row.append(check,identity,times,quotes); list.append(row);
@@ -181,7 +183,7 @@ function connectDesktop() {
 }
 function renderSnapshot(state) {
   snapshot=state;
-  $('mode-badge').textContent = state.mode==='demo' ? '演示模式 · 不联网' : '官网浏览器模式';
+  $('mode-badge').textContent = state.mode==='demo' ? '演示模式 · 不联网' : state.query_backend==='api' ? '接口查票 · 浏览器下单' : '官网浏览器模式';
   $('demo-banner').hidden = state.mode!=='demo';
   if (state.mode==='demo') {
     document.querySelector('.desktop-card > p').textContent='演示环境仅验证界面和流程，不连接官网浏览器或真实账号。';

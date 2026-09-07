@@ -6,13 +6,14 @@ import json
 import logging
 import os
 import signal
+import traceback
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
 from .browser import BrowserAdapter
 from .config import load_config
-from .domain import SHANGHAI, NeedsAttention, Offer, rank_offers
+from .domain import SHANGHAI, NeedsAttention, Offer, QueryFailed, rank_offers
 from .notify import Notifier
 from .runner import Runner
 from .state import Store, exclusive_run
@@ -31,6 +32,21 @@ def parser() -> argparse.ArgumentParser:
     probe = sub.add_parser("probe", help="只查询并筛选；不登录、不点击预订、不提交")
     probe.add_argument(
         "--all-dates", action="store_true", help="依次检查全部配置日期，遵守查询间隔"
+    )
+    api_probe = sub.add_parser("probe-api", help="只读验证接口查票；默认匿名，不启动购票任务")
+    api_probe.add_argument(
+        "--with-session",
+        action="store_true",
+        help="复用专用浏览器会话并检查登录态；同数据目录控制台须先停止",
+    )
+    api_probe.add_argument(
+        "--compare-browser", action="store_true", help="再做一次只读网页查询，对照车次、价格和耗时"
+    )
+    api_probe.add_argument(
+        "--all-dates", action="store_true", help="依次验证全部配置日期，遵守查询间隔"
+    )
+    api_probe.add_argument(
+        "--diagnostics", action="store_true", help="失败时输出代码位置，不输出响应或凭据"
     )
     account = sub.add_parser(
         "check-account", help="扫码后只检查登录及未完成订单页面，不预订、不下单"
@@ -98,6 +114,17 @@ async def execute(args) -> int:
         print(f"配置有效：{config.task_id}；自动提交：{config.execution.auto_submit}")
         if config.execution.stop_at <= datetime.now(SHANGHAI):
             print("注意：任务已过期，run 不会再执行购票。")
+        return 0
+    if args.command == "probe-api":
+        from .api_probe import probe_api
+
+        await probe_api(
+            config,
+            args.data_dir,
+            with_session=args.with_session,
+            compare_browser=args.compare_browser,
+            all_dates=args.all_dates,
+        )
         return 0
     with exclusive_run(args.data_dir):
         store = Store(args.data_dir)
@@ -283,7 +310,7 @@ def main():
             )
             return
         result = asyncio.run(execute(args))
-    except NeedsAttention as exc:
+    except (NeedsAttention, QueryFailed) as exc:
         log.error("%s", exc)
         result = 2
     except (ValueError, FileNotFoundError) as exc:
@@ -294,6 +321,36 @@ def main():
         result = 130
     except Exception as exc:
         log.error("运行失败：%s；检查浏览器依赖、配置和官方页面", type(exc).__name__)
+        if args.command == "probe-api" and args.diagnostics:
+            frames = traceback.extract_tb(exc.__traceback__)[-8:]
+            log.error(
+                "失败位置：%s",
+                [
+                    {
+                        "file": Path(frame.filename).name,
+                        "function": frame.name,
+                        "line": frame.lineno,
+                    }
+                    for frame in frames
+                ],
+            )
+            details = str(exc)
+            log.error(
+                "浏览器诊断标志：%s",
+                [
+                    word
+                    for word in (
+                        "ProcessSingleton",
+                        "process_singleton",
+                        "SingletonLock",
+                        "Missing X server",
+                        "DISPLAY",
+                        "Permission denied",
+                        "profile appears to be in use",
+                    )
+                    if word in details
+                ],
+            )
         result = 1
     raise SystemExit(result)
 

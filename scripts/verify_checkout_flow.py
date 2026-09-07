@@ -4,7 +4,9 @@ Run with Docker --network none, without the user's data volume. All URLs are rou
 to synthetic fixtures; no real login, passenger, order or notification is involved.
 """
 
+import argparse
 import asyncio
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +15,7 @@ from urllib.parse import urlparse
 from ticket_runner.browser import BrowserAdapter
 from ticket_runner.config import Config
 from ticket_runner.domain import SHANGHAI
+from ticket_runner.query_api import ReadOnlyQueryClient
 from ticket_runner.runner import Runner
 from ticket_runner.state import Store
 
@@ -28,7 +31,7 @@ PENDING = """<div class="order-panel-unpaid"><div class="order-item-bd">
 <td><div>成人票</div><div><span>764元</span> <span>8.6折</span></div></td>
 <td><div class="ticket-status-name">待支付</div></td>
 </tr></table></div></div>"""
-QUERY = """<table id="queryLeftTable"><tr id="ticket_test_01_02">
+QUERY = """<table id="queryLeftTable"><tr id="ticket_test01_01_02">
 <td><a class="number">G698</a><div class="cdz"><strong>深圳北</strong><strong>南京南</strong></div>
 <div class="cds"><strong>08:35</strong><strong>17:00</strong></div></td>
 <td aria-label="G698次列车，二等座票价764元，余票1">1</td>
@@ -51,11 +54,12 @@ class OfflineNotifier:
         pass
 
 
-async def verify():
+async def verify(query_backend="browser"):
     now = datetime.now(SHANGHAI)
     config = Config.model_validate(
         {
             "task_id": "offline-only",
+            "query_backend": query_backend,
             "journey": {
                 "origin": {"name": "深圳北", "code": "IOQ"},
                 "destination": {"name": "南京南", "code": "NKH"},
@@ -73,6 +77,58 @@ async def verify():
         }
     )
     calls = {"query": 0, "submit": 0, "unknown": 0}
+    api_calls = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, body, content_type):
+            self.content = body
+            self.headers = {"content-type": content_type}
+
+        async def body(self):
+            return self.content
+
+        async def dispose(self):
+            pass
+
+    class OfflineRequest:
+        async def get(self, url, **options):
+            path = urlparse(url).path
+            api_calls.append(path)
+            assert options["max_redirects"] == options["max_retries"] == 0
+            if path == "/otn/leftTicket/init":
+                return Response(b"var CLeftTicketUrl='leftTicket/queryG';", "text/html")
+            assert path == "/otn/leftTicket/queryG", path
+            fields = [""] * 58
+            for index, value in {
+                0: "synthetic-only",
+                2: "test01",
+                3: "G698",
+                6: "IOQ",
+                7: "NKH",
+                8: "08:35",
+                9: "17:00",
+                11: "Y",
+                16: "01",
+                17: "02",
+                30: "1",
+                39: "O076400001",
+            }.items():
+                fields[index] = value
+            payload = {
+                "status": True,
+                "httpstatus": 200,
+                "data": {
+                    "flag": "1",
+                    "map": {"IOQ": "深圳北", "NKH": "南京南"},
+                    "result": ["|".join(fields)],
+                },
+            }
+            return Response(json.dumps(payload).encode(), "application/json")
+
+        async def post(self, *_args, **_kwargs):
+            raise AssertionError("Hybrid query must never issue an API order POST")
 
     async def serve(route):
         path = urlparse(route.request.url).path
@@ -101,6 +157,8 @@ async def verify():
         store = Store(data)
         try:
             async with BrowserAdapter(config, data) as adapter:
+                if query_backend == "api":
+                    adapter.api_client = ReadOnlyQueryClient(OfflineRequest())
                 await adapter.context.route("**/*", serve)
                 await adapter.page.goto("https://kyfw.12306.cn/fixture-login")
                 await Runner(config, store, adapter, OfflineNotifier()).run()
@@ -113,8 +171,13 @@ async def verify():
                 store = Store(data)
                 await Runner(config, store, adapter, OfflineNotifier()).run()
                 assert calls == {"query": 1, "submit": 1, "unknown": 0}, calls
+                assert api_calls == (
+                    ["/otn/leftTicket/init", "/otn/leftTicket/queryG"]
+                    if query_backend == "api"
+                    else []
+                )
                 print(
-                    "PASS: real Chromium + production adapter synthetic query → prepare → confirm → receipt → SQLite reopen; exactly one simulated submit."
+                    f"PASS: {query_backend} query + real Chromium + production adapter synthetic query → prepare → confirm → receipt → SQLite reopen; exactly one simulated submit."
                 )
                 print(store.timing_report())
         finally:
@@ -122,4 +185,6 @@ async def verify():
 
 
 if __name__ == "__main__":
-    asyncio.run(verify())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--query-backend", choices=["browser", "api"], default="browser")
+    asyncio.run(verify(parser.parse_args().query_backend))

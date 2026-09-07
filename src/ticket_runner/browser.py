@@ -24,7 +24,9 @@ from .domain import (
     parse_catalog,
     parse_offers,
     query_url,
+    rank_offers,
 )
+from .query_api import ReadOnlyQueryClient
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +127,7 @@ class BrowserAdapter:
         self.current_date: date | None = None
         self.on_login_required = None
         self.on_progress = None
+        self.api_client = None
 
     def progress(self, stage, message):
         if self.on_progress:
@@ -274,13 +277,35 @@ class BrowserAdapter:
         raise QueryFailed("查询未返回可确认的结果，不能判定为无票")
 
     async def query(self, travel_date: date) -> list[Offer]:
+        if self.config.query_backend == "api":
+            result = await self.query_client().offers(travel_date, self.config)
+            self.api_progress()
+            return result
         rows = await self.query_rows(travel_date)
         if rows and not sum(len(row["seats"]) for row in rows):
             raise QueryFailed("结果缺少可核实的票价/余票描述，停止使用未知页面结构")
         return parse_offers(rows, travel_date)
 
     async def query_catalog(self, travel_date: date) -> list[dict]:
+        if self.config.query_backend == "api":
+            result = await self.query_client().catalog(travel_date, self.config)
+            self.api_progress()
+            return result
         return parse_catalog(await self.query_rows(travel_date), travel_date, self.config)
+
+    def query_client(self):
+        if self.api_client is None:
+            self.api_client = ReadOnlyQueryClient(
+                self.context.request, timeout_seconds=self.config.browser.timeout_seconds
+            )
+        return self.api_client
+
+    def api_progress(self):
+        metrics = self.api_client.last_metrics
+        self.progress(
+            "API_RESULT",
+            f"接口查票完成：{metrics['trains']} 个车次，{metrics['seconds']} 秒；未进入预订",
+        )
 
     async def one(self, key: str):
         locator = self.page.locator(self.selectors[key])
@@ -345,6 +370,35 @@ class BrowserAdapter:
         return checkbox
 
     async def prepare(self, offer: Offer):
+        if self.config.query_backend == "api":
+            # API matches are NOT authority to click a stale/different browser row.
+            self.progress("REVALIDATE", "接口发现候选票，正在官方页面重新核对；尚未预订")
+            rows = await self.query_rows(offer.travel_date)
+            candidates = rank_offers(
+                parse_offers(rows, offer.travel_date), self.config, datetime.now(SHANGHAI)
+            )
+            if not any(
+                (
+                    item.row_id,
+                    item.train,
+                    item.travel_date,
+                    item.origin,
+                    item.destination,
+                    item.departure,
+                    item.seat,
+                )
+                == (
+                    offer.row_id,
+                    offer.train,
+                    offer.travel_date,
+                    offer.origin,
+                    offer.destination,
+                    offer.departure,
+                    offer.seat,
+                )
+                for item in candidates
+            ):
+                raise QueryFailed("接口候选票未通过页面复核，未点击预订，将继续按间隔查票")
         if self.current_date != offer.travel_date:
             raise NeedsAttention("查询日期与待提交行程不一致")
         await self.detect_interruption()

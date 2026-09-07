@@ -1,6 +1,7 @@
 # 这是示例，修改为你确实需要购买的行程后再运行。
 # 车站代码可从官网查询链接的 fs/ts 参数取得；必须同时填写名称与代码。
 task_id: trip-2026-10-01
+query_backend: browser       # api=接口查票+浏览器复核下单；browser=原网页查询
 journey:
   origin: {name: 深圳北, code: IOQ}
   destination: {name: 南京南, code: NKH}

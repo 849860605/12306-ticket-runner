@@ -4,13 +4,14 @@ const phases={IDLE:['等待启动',-1],CONFIG_SAVED:['偏好已保存',-1],START
 let state=null,lastEvents='',started=null,priorTask=null,elapsedAtStop=null;
 Object.assign(phases,{ORDER_SUBMITTED:['等待最终确认窗口',3],REVIEW:['核对最终确认信息',3],QUEUED:['官网处理中 · 等待结果',3]});
 Object.assign(phases,{ACCOUNT_READY:['登录与订单检查通过',0],PREPARED:['预订信息已核对',2]});
+Object.assign(phases,{API_RESULT:['接口查票完成',1],REVALIDATE:['页面复核接口候选票',2]});
 const clock=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 function render(next){
   state=next;
   const [title,step]=phases[next.phase] || [next.phase,-1];
   $('phase-title').textContent=next.mode==='demo' && next.phase==='ORDER_CREATED'?'模拟订单完成 · 非真实购票':title;
   $('phase-description').textContent=next.message;
-  $('flow-mode').textContent=next.mode==='demo'?'DEMO · 不联网 / 不下单':'LIVE ACTIVITY · 实时状态';
+  $('flow-mode').textContent=next.mode==='demo'?'DEMO · 不联网 / 不下单':next.query_backend==='api'?'API QUERY · 浏览器下单':'LIVE ACTIVITY · 实时状态';
   $('query-count').firstChild.textContent=next.query_count;
   $('query-interval').firstChild.textContent=next.interval;
   $('monitor-safety').textContent=next.mode==='demo'?'演示数据，未访问12306，未创建真实订单。':'此小窗只读。关闭小窗不会停止任务；付款请在官方处理。';
