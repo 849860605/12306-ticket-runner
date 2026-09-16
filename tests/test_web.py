@@ -365,3 +365,23 @@ def test_catalog_sold_out_selectable_but_not_purchase_offer(config):
     assert catalog[0]["seats"][0]["status"] == "候补"
     rows[0]["origin"] = "深圳"
     assert parse_catalog(rows, config.journey.dates[0], config) == []
+
+
+async def test_catalog_failure_is_visible_with_partial_date_results(dashboard):
+    client, controller, _ = dashboard
+    from datetime import timedelta
+
+    from ticket_runner.domain import QueryFailed
+
+    day = controller.draft.journey.dates[0]
+    controller.draft.journey.dates.append(day + timedelta(days=1))
+    adapter = await controller.browser(controller.draft)
+    adapter.query_catalog = AsyncMock(side_effect=[[{"train": "G846"}], QueryFailed("接口超时")])
+    controller.sleep = AsyncMock()
+    await client.post("/api/query", json={})
+    await controller.work
+    state = (await client.get("/api/status")).json()
+    assert state["catalog_status"] == "error" and "接口超时" in state["catalog_error"]
+    assert state["catalog"] == [{"train": "G846"}]
+    assert state["catalog_query"]["completed_dates"] == [str(day)]
+    assert state["busy"] is None

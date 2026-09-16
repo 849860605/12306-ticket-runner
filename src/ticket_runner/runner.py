@@ -128,8 +128,9 @@ class Runner:
         if self.stop.is_set():
             return
         try:
-            await self.measured("login", self.adapter.ensure_login)
-            await self.measured("account_check", self.adapter.check_existing_orders)
+            if cfg.query_backend != "api" or cfg.execution.auto_submit:
+                await self.measured("login", self.adapter.ensure_login)
+                await self.measured("account_check", self.adapter.check_existing_orders)
         except Exception as exc:
             self.store.transition(cfg.task_id, "ATTENTION", self.safe_error(exc), notify=True)
             await self.notifier.flush()

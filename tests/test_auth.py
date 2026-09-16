@@ -53,8 +53,10 @@ async def test_first_start_without_checkpoint(tmp_path):
 async def test_valid_restored_session_does_not_reopen_login_page(config, tmp_path, monkeypatch):
     (tmp_path / "session-cookies.json").write_text("[]")
     adapter = BrowserAdapter(config, tmp_path)
+    adapter.ensure_browser = AsyncMock()
     adapter.page = MagicMock()
     adapter.page.goto = AsyncMock()
+    adapter.page.wait_for_load_state = AsyncMock()
     adapter.page.get_by_role.return_value.wait_for = AsyncMock()
     adapter.authenticated = AsyncMock(side_effect=[False, True])
     save = AsyncMock()

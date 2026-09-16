@@ -48,6 +48,22 @@ async def test_dry_run_never_clicks_booking(config, offer, now, tmp_path):
     store.close()
 
 
+async def test_api_readonly_monitor_needs_no_login_or_browser(config, offer, now, tmp_path):
+    from unittest.mock import AsyncMock
+
+    config.query_backend = "api"
+    config.execution.auto_submit = False
+    adapter, store = FakeAdapter(offer), Store(tmp_path)
+    adapter.ensure_login = AsyncMock(side_effect=RuntimeError("browser unavailable"))
+    adapter.check_existing_orders = AsyncMock()
+    await make_runner(config, store, adapter, now).run()
+    assert store.get(config.task_id)["state"] == "DRY_RUN"
+    adapter.ensure_login.assert_not_awaited()
+    adapter.check_existing_orders.assert_not_awaited()
+    assert adapter.prepare_calls == adapter.submit_calls == 0
+    store.close()
+
+
 async def test_persisted_intent_exists_before_submit(config, offer, now, tmp_path):
     adapter, store = FakeAdapter(offer), Store(tmp_path)
 

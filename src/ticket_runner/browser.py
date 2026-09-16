@@ -11,7 +11,7 @@ from pathlib import Path
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from .auth import restore_session, save_session
+from .auth import load_session_cookies, restore_session, save_session
 from .config import Config
 from .domain import (
     LOGIN_URL,
@@ -26,6 +26,7 @@ from .domain import (
     query_url,
     rank_offers,
 )
+from .profile import profile_lease
 from .query_api import ReadOnlyQueryClient
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,9 @@ class BrowserAdapter:
         self.on_login_required = None
         self.on_progress = None
         self.api_client = None
+        self.api_request = None
+        self.profile_lock = None
+        self.context_closed = False
 
     def progress(self, stage, message):
         if self.on_progress:
@@ -137,6 +141,31 @@ class BrowserAdapter:
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.playwright = await async_playwright().start()
         try:
+            if self.config.query_backend == "api":
+                # Read-only queries need HTTP and cookies, not Chromium or Xvfb.
+                self.api_request = await self.playwright.request.new_context(
+                    storage_state={"cookies": load_session_cookies(self.data_dir), "origins": []}
+                )
+            else:
+                await self.ensure_browser()
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
+        return self
+
+    async def ensure_browser(self):
+        if self.context is not None and not self.context_closed:
+            if self.page is None or self.page.is_closed():
+                self.page = await self.context.new_page()
+            return
+        if self.profile_lock:
+            self.profile_lock.__exit__(None, None, None)
+            self.profile_lock = None
+        lease = profile_lease(self.data_dir)
+        lease.__enter__()
+        self.profile_lock = lease
+        self.context, self.page = None, None
+        try:
             self.context = await self.playwright.chromium.launch_persistent_context(
                 str(self.data_dir / "browser-profile"),
                 headless=self.config.browser.headless,
@@ -145,53 +174,79 @@ class BrowserAdapter:
                 viewport={"width": 1440, "height": 1000},
                 accept_downloads=False,
             )
+            self.context_closed = False
+            self.context.on("close", self.browser_closed)
             await restore_session(self.context, self.data_dir)
+            if self.api_request:
+                state = await self.api_request.storage_state()
+                await self.context.add_cookies(state["cookies"])
             self.context.set_default_timeout(self.config.browser.timeout_seconds * 1000)
             self.page = await self.context.new_page()
+            self.api_client = None  # From now on, share the live browser's cookies.
+            if self.api_request:
+                await self.api_request.dispose()
+                self.api_request = None
         except BaseException:
             if self.context:
                 await self.context.close()
-            await self.playwright.stop()
+            self.context, self.page = None, None
+            self.profile_lock.__exit__(None, None, None)
+            self.profile_lock = None
             raise
-        return self
 
     async def __aexit__(self, *_):
-        if self.context:
+        try:
+            if self.context:
+                try:
+                    if self.page and not self.page.is_closed() and await self.authenticated():
+                        await save_session(self.context, self.data_dir)
+                except Exception:
+                    log.warning("退出时未能更新登录状态，保留上次成功的会话文件")
+                await self.context.close()
+        finally:
             try:
-                if self.page and not self.page.is_closed() and await self.authenticated():
-                    await save_session(self.context, self.data_dir)
-            except Exception:
-                # Keep the last successful checkpoint; do not mask order/task errors.
-                log.warning("退出时未能更新登录状态，保留上次成功的会话文件")
-            await self.context.close()
-        if self.playwright:
-            await self.playwright.stop()
+                if self.api_request:
+                    await self.api_request.dispose()
+            finally:
+                try:
+                    if self.playwright:
+                        await self.playwright.stop()
+                finally:
+                    if self.profile_lock:
+                        self.profile_lock.__exit__(None, None, None)
+                    self.profile_lock = self.api_request = self.api_client = None
+                    self.playwright = self.context = self.page = None
+
+    def browser_closed(self, _):
+        self.context_closed = True
+        self.api_client = None
+
+    async def ensure_query_transport(self):
+        if self.context_closed and self.api_request is None:
+            self.api_request = await self.playwright.request.new_context(
+                storage_state={"cookies": load_session_cookies(self.data_dir), "origins": []}
+            )
 
     async def authenticated(self) -> bool:
+        if self.page is None or self.context_closed:
+            return False
         # Do not infer successful login just from a cookie or disappearance of the QR.
         logout = self.page.get_by_role("link", name="退出", exact=True)
         return await logout.count() == 1 and await logout.is_visible()
 
     async def ensure_login(self):
+        await self.ensure_browser()
+        qr_file = self.data_dir / "login-qr.png"
         if await self.authenticated():
             await save_session(self.context, self.data_dir)
+            qr_file.unlink(missing_ok=True)
             return
-        if (self.data_dir / "session-cookies.json").exists():
-            # The login entry can show a new QR even when the protected order page
-            # accepts the restored session. Check that page before requesting a scan.
-            await self.page.goto(ORDER_URL, wait_until="domcontentloaded")
-            try:
-                await self.page.get_by_role("link", name="退出", exact=True).wait_for(
-                    state="visible"
-                )
-            except PlaywrightTimeoutError:
-                await self.detect_interruption()
-            else:
-                if await self.authenticated():
-                    await save_session(self.context, self.data_dir)
-                    log.info("已复用官网登录状态，无需重新扫码")
-                    return
-        await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        qr_file.unlink(missing_ok=True)
+        # A restored session is checked on a protected page. An expired session
+        # redirects to the login form: recognize either outcome immediately,
+        # rather than waiting a full timeout for a logout link that cannot appear.
+        target = ORDER_URL if (self.data_dir / "session-cookies.json").exists() else LOGIN_URL
+        await self.page.goto(target, wait_until="domcontentloaded")
         qr_tab = self.page.get_by_role("link", name="扫码登录", exact=True)
         ready_deadline = asyncio.get_running_loop().time() + self.config.browser.timeout_seconds
         while asyncio.get_running_loop().time() < ready_deadline:
@@ -201,16 +256,20 @@ class BrowserAdapter:
                 return
             if await qr_tab.count() == 1 and await qr_tab.is_visible():
                 break
-            await asyncio.sleep(0.5)
+            await self.detect_interruption()
+            await asyncio.sleep(0.2)
         else:
             raise NeedsAttention("登录页未正常加载，请检查浏览器访问环境")
+        # The protected page may redirect via JavaScript after its own DOM event.
+        # Visible login markup alone does not mean the destination's click handlers
+        # have loaded; wait for that page before switching to the QR panel.
+        await self.page.wait_for_load_state("domcontentloaded")
         await qr_tab.click()
-        if self.on_login_required:
-            await self.on_login_required()
+        self.progress("LOGIN_QR_LOADING", "正在加载官方登录二维码，请稍候")
         deadline = asyncio.get_running_loop().time() + self.config.browser.login_timeout_seconds
-        qr_file = self.data_dir / "login-qr.png"
+        qr_deadline = asyncio.get_running_loop().time() + self.config.browser.timeout_seconds
+        announced = False
         next_capture = 0.0
-        log.warning("请用官方 12306 App 扫码。二维码文件：%s；也可通过远程桌面操作", qr_file)
         while asyncio.get_running_loop().time() < deadline:
             if await self.authenticated():
                 await save_session(self.context, self.data_dir)
@@ -235,8 +294,16 @@ class BrowserAdapter:
                 if ready:
                     await qr.screenshot(path=str(qr_file))
                     qr_file.chmod(0o600)
+                    if not announced:
+                        if self.on_login_required:
+                            await self.on_login_required()
+                        log.warning("请用官方 12306 App 扫码，也可通过远程桌面操作")
+                        announced = True
                     next_capture = asyncio.get_running_loop().time() + 10
-            await asyncio.sleep(2)
+            if not announced and asyncio.get_running_loop().time() >= qr_deadline:
+                await self.detect_interruption()
+                raise NeedsAttention("官方登录二维码未能加载，请重新打开扫码登录，或在官方浏览器中检查提示")
+            await asyncio.sleep(2 if announced else 0.2)
         raise NeedsAttention("扫码登录/手机核验未在规定时间内完成；请执行 login 后恢复任务")
 
     async def detect_interruption(self):
@@ -253,6 +320,7 @@ class BrowserAdapter:
             raise NeedsAttention("官网返回异常页面，请检查访问环境")
 
     async def query_rows(self, travel_date: date) -> list[dict]:
+        await self.ensure_browser()
         target = query_url(self.config.journey.origin, self.config.journey.destination, travel_date)
         # Fresh navigation prevents accidentally reading rows from a previous date/query.
         await self.page.goto(target, wait_until="domcontentloaded")
@@ -278,6 +346,7 @@ class BrowserAdapter:
 
     async def query(self, travel_date: date) -> list[Offer]:
         if self.config.query_backend == "api":
+            await self.ensure_query_transport()
             result = await self.query_client().offers(travel_date, self.config)
             self.api_progress()
             return result
@@ -288,6 +357,7 @@ class BrowserAdapter:
 
     async def query_catalog(self, travel_date: date) -> list[dict]:
         if self.config.query_backend == "api":
+            await self.ensure_query_transport()
             result = await self.query_client().catalog(travel_date, self.config)
             self.api_progress()
             return result
@@ -296,7 +366,8 @@ class BrowserAdapter:
     def query_client(self):
         if self.api_client is None:
             self.api_client = ReadOnlyQueryClient(
-                self.context.request, timeout_seconds=self.config.browser.timeout_seconds
+                self.context.request if self.context and not self.context_closed else self.api_request,
+                timeout_seconds=self.config.browser.timeout_seconds,
             )
         return self.api_client
 

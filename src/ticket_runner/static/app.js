@@ -125,15 +125,19 @@ function fill(config) {
   if (dayRange(days[0], days.at(-1)).length !== days.length) { setDirty(); notify('原配置包含非连续日期；当前编辑器按整个日期区间监控，请重新核对并保存。', true); }
 }
 function renderCatalog(state) {
-  const key = JSON.stringify([state.catalog, seatPriority, state.busy === 'query']);
+  const key = JSON.stringify([state.catalog, seatPriority, state.busy === 'query', state.catalog_status, state.catalog_error, state.catalog_query]);
   if (key === lastCatalog) return; lastCatalog = key;
   $('train-count').textContent = state.catalog.length;
   const list = $('train-list'); list.replaceChildren();
   if (!state.catalog.length) {
     const empty = node('div','empty-state'); empty.append(node('div','empty-track','··· → ···'));
-    empty.append(node('h3','',state.busy === 'query' ? (state.mode==='demo' ? '正在加载模拟车次…' : '正在从官网读取车次…') : '还没有可选的查询结果'));
-    empty.append(node('p','',state.busy === 'query' ? '按日期依次查询，不预订、不提交；结果会陆续出现在这里。' : '填写行程后查询。也可以在高级设置手填车次，无票时持续监控。'));
+    const failed=state.catalog_status==='error', complete=state.catalog_status==='complete', paused=state.catalog_status==='paused';
+    empty.append(node('h3','',failed ? '查票失败' : state.busy === 'query' ? (state.mode==='demo' ? '正在加载模拟车次…' : '正在从官网读取车次…') : complete ? '没有符合当前站点和发车时段的车次' : paused ? '查询已暂停' : '还没有可选的查询结果'));
+    empty.append(node('p','',failed ? state.catalog_error : state.busy === 'query' ? '按日期依次查询，结果会陆续出现在这里。' : complete ? '请核对车站、日期和发车时段后重新查询。' : '填写行程后查询。也可以在高级设置手填车次，无票时持续监控。'));
     list.append(empty); return;
+  }
+  if (state.catalog_status==='error' || state.catalog_status==='paused') {
+    list.append(node('p','banner',state.catalog_status==='error' ? `部分日期查询失败：${state.catalog_error}。以下仅为已完成日期的结果。` : '查询已暂停，以下仅为已完成日期的结果。'));
   }
   for (const train of state.catalog) {
     const row = node('label','train-row'); row.dataset.train = train.train;
@@ -169,17 +173,18 @@ function renderHistory(state) {
     if (['SUBMITTING','UNKNOWN','ORDER_CREATED','ATTENTION','DRY_RUN'].includes(task.state)) {
       const actions=node('div','task-actions');
       if (['SUBMITTING','UNKNOWN','ORDER_CREATED'].includes(task.state)) {
-        const reconcile=node('button','text-button','只回查订单'); reconcile.type='button'; reconcile.onclick=()=>action(async()=>{ await api('/api/reconcile',{task_id:task.task_id}); connectDesktop(); }); actions.append(reconcile);
+        const reconcile=node('button','text-button','只回查订单'); reconcile.type='button'; reconcile.onclick=()=>action(async()=>{ await api('/api/reconcile',{task_id:task.task_id}); connectDesktop(true); }); actions.append(reconcile);
       }
       const resolve=node('button','text-button','已在官方核对？'); resolve.type='button'; resolve.onclick=()=>{resolvingTask=task.task_id;$('resolve-confirmation').value='';$('resolve-dialog').showModal();}; actions.append(resolve); item.append(actions);
     }
     list.append(item);
   }
 }
-function connectDesktop() {
+function connectDesktop(reconnect = false) {
   if (snapshot?.mode==='demo') return;
   const url = new URL($('desktop-link').href);
-  $('desktop-frame').src = url.href; $('desktop-frame').hidden=false; $('desktop-placeholder').hidden=true;
+  if (reconnect || $('desktop-frame').src !== url.href) $('desktop-frame').src = url.href;
+  $('desktop-frame').hidden=false; $('desktop-placeholder').hidden=true;
 }
 function renderSnapshot(state) {
   snapshot=state;
@@ -189,7 +194,9 @@ function renderSnapshot(state) {
     document.querySelector('.desktop-card > p').textContent='演示环境仅验证界面和流程，不连接官网浏览器或真实账号。';
     document.querySelector('#consent-row span').textContent='我已核对演示条件，允许执行模拟提交；不产生真实订单。';
   }
-  $('login-status').textContent = state.mode==='demo' ? '模拟登录' : state.logged_in ? '最近检查已登录' : state.phase==='LOGIN_REQUIRED' ? '请扫码' : '未检查登录';
+  const loginPhases = {LOGIN:'正在检查登录', LOGIN_QR_LOADING:'二维码加载中', LOGIN_REQUIRED:'请扫码'};
+  $('login-status').textContent = state.mode==='demo' ? '模拟登录' : state.logged_in ? '最近检查已登录' : loginPhases[state.phase] || '未检查登录';
+  if (state.busy && loginPhases[state.phase]) connectDesktop();
   $('blocker-banner').hidden = !state.blocker;
   if (state.blocker) $('blocker-banner').textContent = `安全保护：存在「${phaseNames[state.blocker.state] || state.blocker.state}」记录。可以保存偏好、查询车次，但新任务暂不能启动。请在右侧回查并核对官方订单；不要为测试重复下单。`;
   if (state.mode==='demo') { $('desktop-placeholder').querySelector('strong').textContent='演示环境不打开官方浏览器'; $('desktop-placeholder').querySelector('span:last-child').textContent='所有流程为模拟，不登录、不付款'; $('desktop-link').hidden=true; $('login-button').textContent='模拟登录'; }
@@ -224,7 +231,7 @@ $('query-button').onclick=()=>action(async()=>{
   try {await save();} finally {if(!previous && !selectedTrains.size){$('all-trains').checked=false;setDirty();}}
   await api('/api/query',{});
 });
-$('login-button').onclick=()=>action(async()=>{connectDesktop();await api('/api/login',{});});
+$('login-button').onclick=()=>action(async()=>{connectDesktop(true);await api('/api/login',{});});
 $('stop-button').onclick=()=>action(async()=>{await api('/api/stop',{});notify('已暂停。不会取消订单，也不会付款。');});
 $('start-button').onclick=()=>action(async()=>{
   if(dirty){await save();notify('选择已保存，请再次核对后启动');return;}
@@ -239,8 +246,9 @@ $('resolve-form').onsubmit=event=>{event.preventDefault();action(async()=>{await
 
 (async()=>{
   try {
-    const boot=await api('/api/bootstrap');token=boot.token;fingerprint=boot.fingerprint;fill(boot.config);renderSnapshot(boot.snapshot);
+    const boot=await api('/api/bootstrap');token=boot.token;fingerprint=boot.fingerprint;fill(boot.config);
     const desktop=new URL(location.href);desktop.port='6080';desktop.pathname='/vnc.html';desktop.search='autoconnect=1&resize=scale';desktop.hash='';$('desktop-link').href=desktop.href;
+    renderSnapshot(boot.snapshot);
     establishEvents();
     try {const response=await fetch('/assets/stations.json');if(response.ok){const values=await response.json();const list=$('stations');list.replaceChildren();for(const station of values){stations.set(station.name,station.code);const option=document.createElement('option');option.value=station.name;option.label=station.pinyin;list.append(option);}}}catch{/* Existing configured stations and manual code input remain available. */}
   } catch(error){$('save-status').textContent='连接失败';notify(error.message,true);}

@@ -32,6 +32,8 @@ async def probe_api(
         days = config.journey.dates if all_dates else config.journey.dates[:1]
         last_start = None
         for day in days:
+            if adapter:
+                client = adapter.query_client()
             if last_start is not None:
                 await asyncio.sleep(
                     max(
@@ -87,15 +89,17 @@ async def probe_api(
 
     if with_session:
         with exclusive_run(data_dir):
-            emit(stage="browser_start", headless=config.browser.headless, note="复用专用会话，不进入预订")
-            async with BrowserAdapter(config, data_dir) as adapter:
-                emit(stage="browser_ready", note="开始只读接口检查")
+            isolated = config.model_copy(deep=True)
+            isolated.query_backend = "api"
+            emit(stage="session_start", note="从专用会话建立 HTTP 客户端，不进入预订")
+            async with BrowserAdapter(isolated, data_dir) as adapter:
                 await inspect(adapter.query_client(), adapter)
     elif compare_browser:
         # Never accidentally reuse an account just to measure anonymous query speed.
         with TemporaryDirectory(prefix="ticket-api-probe-") as directory:
             isolated = config.model_copy(deep=True)
             isolated.browser.headless = True
+            isolated.query_backend = "api"
             async with BrowserAdapter(isolated, Path(directory)) as adapter:
                 await inspect(adapter.query_client(), adapter)
     else:

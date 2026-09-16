@@ -5,6 +5,7 @@ let state=null,lastEvents='',started=null,priorTask=null,elapsedAtStop=null;
 Object.assign(phases,{ORDER_SUBMITTED:['等待最终确认窗口',3],REVIEW:['核对最终确认信息',3],QUEUED:['官网处理中 · 等待结果',3]});
 Object.assign(phases,{ACCOUNT_READY:['登录与订单检查通过',0],PREPARED:['预订信息已核对',2]});
 Object.assign(phases,{API_RESULT:['接口查票完成',1],REVALIDATE:['页面复核接口候选票',2]});
+Object.assign(phases,{LOGIN_QR_LOADING:['正在加载登录二维码',0]});
 const clock=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 function render(next){
   state=next;

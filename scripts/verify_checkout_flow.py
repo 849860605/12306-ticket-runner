@@ -157,6 +157,7 @@ async def verify(query_backend="browser"):
         store = Store(data)
         try:
             async with BrowserAdapter(config, data) as adapter:
+                await adapter.ensure_browser()
                 if query_backend == "api":
                     adapter.api_client = ReadOnlyQueryClient(OfflineRequest())
                 await adapter.context.route("**/*", serve)

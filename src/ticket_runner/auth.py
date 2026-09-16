@@ -20,19 +20,28 @@ def official_cookie(cookie: dict) -> bool:
     return domain == "12306.cn" or domain.endswith(".12306.cn")
 
 
-async def restore_session(context, data_dir: Path):
+def load_session_cookies(data_dir: Path) -> list[dict]:
     checkpoint = data_dir / "session-cookies.json"
     if not checkpoint.exists():
-        return
+        return []
     try:
         cookies = json.loads(checkpoint.read_text(encoding="utf-8"))
         if not isinstance(cookies, list) or any(
             not isinstance(cookie, dict) or not official_cookie(cookie) for cookie in cookies
         ):
             raise ValueError("invalid checkpoint")
-        await context.add_cookies(cookies)
+        return cookies
     except Exception:
         raise NeedsAttention("登录状态文件无法恢复，请保留备份并重新扫码登录") from None
+
+
+async def restore_session(context, data_dir: Path):
+    cookies = load_session_cookies(data_dir)
+    if cookies:
+        try:
+            await context.add_cookies(cookies)
+        except Exception:
+            raise NeedsAttention("登录状态文件无法恢复，请保留备份并重新扫码登录") from None
 
 
 async def save_session(context, data_dir: Path):

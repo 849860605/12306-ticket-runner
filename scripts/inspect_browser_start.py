@@ -34,7 +34,8 @@ async def inspect(headful=False):
             flush=True,
         )
         try:
-            async with BrowserAdapter(config, directory):
+            async with BrowserAdapter(config, directory) as adapter:
+                await adapter.ensure_browser()
                 print(json.dumps({"browser_started": True, "navigations": 0}))
         except Exception as exc:
             text = str(exc)

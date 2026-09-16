@@ -216,6 +216,8 @@ class Controller:
         self.logged_in = False
         self.catalog = []
         self.catalog_query = None
+        self.catalog_status = "idle"
+        self.catalog_error = None
         self.version = 0
         self.query_count = 0
         self.last_query_started = None
@@ -284,6 +286,7 @@ class Controller:
             or config.preferences.departure_before != self.draft.preferences.departure_before
         ):
             self.catalog, self.catalog_query = [], None
+            self.catalog_status, self.catalog_error = "idle", None
         write_config(self.data_dir / "ui-config.yaml", config)
         self.draft = config
         self.publish("CONFIG_SAVED", "已保存选择，尚未启动抢票")
@@ -319,6 +322,8 @@ class Controller:
         try:
             await operation()
         except asyncio.CancelledError:
+            if kind == "query":
+                self.catalog_status = "paused"
             existing = self.store.get(self.active_task) if self.active_task else None
             if existing and existing["state"] in {"SUBMITTING", "UNKNOWN"}:
                 self.store.transition(
@@ -336,6 +341,8 @@ class Controller:
                     self.publish("PAUSED", "当前操作已暂停，不会自动重新开始")
         except Exception as exc:
             self.last_error = Runner.safe_error(exc)
+            if kind == "query":
+                self.catalog_status, self.catalog_error = "error", self.last_error
             self.publish("ATTENTION", self.last_error)
         finally:
             self.busy = None
@@ -344,6 +351,7 @@ class Controller:
 
     def login(self):
         async def operation():
+            self.logged_in = False
             self.publish("LOGIN", "正在检查官方登录状态")
             adapter = await self.browser(self.draft)
             await adapter.ensure_login()
@@ -361,17 +369,21 @@ class Controller:
 
         async def operation():
             self.catalog = []
+            self.catalog_status, self.catalog_error = "loading", None
             self.catalog_query = {
                 "origin": config.journey.origin.name,
                 "destination": config.journey.destination.name,
                 "dates": [str(day) for day in config.journey.dates],
+                "completed_dates": [],
             }
             adapter = await self.browser(config)
             for day in config.journey.dates:
                 await self.throttle(config.execution.query_interval_seconds)
                 self.publish("QUERY", "只读查询车次；不预订、不下单", date=str(day))
                 self.catalog.extend(await adapter.query_catalog(day))
+                self.catalog_query["completed_dates"].append(str(day))
                 self.version += 1
+            self.catalog_status = "complete"
             self.publish(
                 "CATALOG_READY",
                 f"查询完成，找到 {len(self.catalog)} 个车次日期组合；无票车次也可加入监控",
@@ -515,6 +527,8 @@ class Controller:
             else None,
             "catalog": self.catalog,
             "catalog_query": self.catalog_query,
+            "catalog_status": self.catalog_status,
+            "catalog_error": self.catalog_error,
             "events": self.store.recent_events(),
             "tasks": state["tasks"],
             "pending_notifications": state["pending_notifications"],
